@@ -2,56 +2,173 @@
 name: pang-opencode-ctrl
 description: 使用opencode-cli操作opencode.用此技能管理会话,选择模型,切换代理.协调 opencode的编码工作
 ---
+
 ## Core rule
 openclaw不编码.全部规划,编码和问题分析交给opencode完成
 
-## 使用方式
-1. 使用`python3 scripts/check-and-up.py`检查或启动opencode,失败会返回false,此时则向用户报告全部返回内容
-2. 使用`opencode run --attach http://localhost:4096 --dir <项目根目录> [任务具体内容]`派发任务, ⚠️`--dir <项目根目录>` 必填, 不确定应该是哪个目录时必须询问用户, 其他参数:
-	1. `-f`附加到消息的文件
-	2. 复用session时, 使用`-s <session_id>`指定session
-	3. 当需要使用新session时, 使用`--title`命令给新session命名. 命名为`<项目名>_<类型>_<发起人名>`,例如"PhostBook_后端_Clovette"
-	4. `--agent`选择代理
-	5. `-m`选择模型
-3. 派发任务命令使用必须使用 background 模式启动, 如果意外中断可以使用`python3 scripts/poll_session.py <session_id>`查询是否已完成
-4. 使用新session时,任务执行完成/中断后及时查询session列表, 根据名称找到对应session id并记录
+---
 
-## session管理
-1. 使用`opencode session list -n 10`命令查询session列表可获取session id, `-n` 参数限制返回条数
-2. 使用如下命令修改session名称`python3 scripts/rename-session.py <session_id> <newname>`
-3. 复用已存在的session,同一类型的任务使用同一个session,不同类型的不能混用,类型如: 前端/后端/测试 
-4. 用户未明确要求时,除非当前项目不存在同类型的session,否则不应该使用新session
+## 1. 启动/检查 opencode serve
 
-## agent 选择
-opencode 安装了oh-my-openagent插件,有以下主力 agent, 使用`opencode run`命令时可通过`--agent`进行选择:
-- Sisyphus: 主要编排者(默认) . 简单问题,小型改动交给它处理
-- Prometheus: 规划者. 复杂问题,大型改动由它进行规划
-- Atlas:执行者,Prometheus做好计划后交由它进行执行
+运行 `python3 scripts/check-and-up.py`：
+- 返回 `true` → 已运行，继续
+- 返回 `false` → 启动失败，向用户报告全部返回内容
 
-### 计划模式
-当需要构建,修改,重构涉及多个功能,接口,甚至是多模块时, 步骤如下:
-1. 使用Prometheus制定详细计划
-	- 要求Prometheus每次提问尽可能提出当前全部问题,然后由openclaw向用户一一确认
-	- 计划必须有详细步骤,并保存到plan.md中
-2. 计划完成后切换至Atlas, 发送`/start-work`开始执行计划
+---
 
-### 直接构建模式
-当需要构建,修改,重构单个功能,接口,或者编写简单脚本等相对简单的工作时:
-1. 将任务交给Sisyphus,并询问任务是否有模糊,互相冲突等问题,让它尽可能提出当前全部问题,然后由openclaw向用户确认
-2. 要求澄清问题后给出方案并向用户确认是否正确
-3. 确认后要求Sisyphus开始工作
+## 2. 派发任务
 
-## 模型选择
-当前全部可用模型列表可以通过`opencode models`命令查询,以下是常用模型
-1. 免费模型
-	opencode/big-pickle
-	opencode/deepseek-v4-flash-free
-	opencode/mimo-v2.5-free
-2. opencode-go订阅模型
-	opencode-go/deepseek-v4-flash
-	opencode-go/deepseek-v4-pro
-	opencode-go/glm-5.1
-	opencode-go/kimi-k2.6
-3. deepseek官方api
-	deepseek/deepseek-v4-flash
-	deepseek/deepseek-v4-pro
+### 命令模板
+
+```bash
+cd <项目根目录> && opencode run --attach http://localhost:4096 \
+  --dir <项目根目录> \
+  -f <附件> \
+  --title "<项目>_<类型>_<发起人>" \
+  '<任务描述>'
+```
+
+### 参数说明
+
+| 参数 | 必填 | 说明 |
+|------|------|------|
+| `--dir` | ✅ | session 归属的项目根目录。**缺了这个 → session 挂到 daemon 默认项目下，`session list` 查不到，agent 在错误目录找文件。** 不确定用哪个目录时问用户。 |
+| `--title` | ✅ | 格式 `<项目>_<类型>_<发起人>`，如 `PhostBook_方案_Clovette`。用于识别 session，必须和任务内容对应。 |
+| `-f` | 按需 | 附件文件路径，相对于项目根目录 |
+| `--agent` | 按需 | 见下方 agent 选择 |
+| `-m` | 按需 | 模型选择 |
+| 任务描述 | ✅ | 最后一个参数，完整的任务描述 |
+
+### ⚠️ 禁止重复发任务
+
+发任务前先查 session list，看是否有同名 title 的 session：
+- 有 → 等它完成，不重发
+- 没有 → 正常发送
+
+---
+
+## 3. 验证任务状态
+
+> ⚠️ **关键理解：`opencode run` CLI 进程退出 ≠ session 失败。**
+> Session 由 daemon（`opencode serve`）独立管理，CLI 只是观察者。
+> CLI 退出了（无论什么信号），session 仍在后台继续运行。
+
+### 标准验证流程
+
+#### 步骤 1：获取 session ID
+
+```bash
+cd <项目根目录> && opencode session list -n 5
+```
+
+找到刚发的 session（匹配 title），记下 Session ID。
+如果 session 没出现 → 从上级目录也查一次，检查 `--dir` 是否设对。
+
+#### 步骤 2：用 poll_session.py 等待完成
+
+```bash
+python3 scripts/poll_session.py <session_id>
+```
+
+脚本会每隔 5 秒轮询 OpenCode REST API，等待 assistant 回复完成后输出结果。
+
+#### 步骤 3：判断结果
+
+| 输出情况 | 判断 |
+|---------|------|
+| 输出了 agent 回复文本 | ✅ session 正常完成 |
+| 输出了文件变更（diff） | ✅ 任务执行成功 |
+| 输出了 Error / Failed | ❌ 任务执行出错 |
+| 脚本报 404 | ❌ session ID 不存在 |
+| 脚本报连接错误 | ❌ opencode serve 可能挂了 |
+
+### 特殊情况：前台命令超时/中断
+
+如果前台 `opencode run` 被超时或中断，**不用重发**，走标准验证流程（步骤 1→2→3）即可。
+
+---
+
+## 4. 会话管理
+
+### 查 session
+
+```bash
+opencode session list -n 10
+```
+
+`session list` 是目录相关的，只显示当前项目下的 session。
+如果查不到，换上级目录重试。
+
+### 重命名 session
+
+```bash
+python3 scripts/rename-session.py <session_id> <新名称>
+```
+
+### 复用规则
+
+- 同一类型的任务用同一个 session
+- 类型区分：前端 / 后端 / 测试 / 方案 等
+- 用户未明确要求时，除非当前项目不存在同类型的 session，否则不应该用新 session
+
+---
+
+## 5. Agent 选择
+
+opencode 安装了 oh-my-openagent 插件，有以下主力 agent：
+
+| Agent | 角色 | 适用场景 |
+|-------|------|---------|
+| **Sisyphus** | 主要编排者（默认） | 简单问题、小型改动 |
+| **Prometheus** | 规划者 | 复杂问题、大型改动——先出计划 |
+| **Atlas** | 执行者 | Prometheus 出计划后执行 |
+
+使用 `opencode run` 时通过 `--agent` 选择。
+
+### 计划模式（多功能 / 多模块任务）
+
+1. 用 Prometheus 制定详细计划
+   - 要求每次提问尽可能提出当前全部问题，由 openclaw 向用户确认
+   - 计划必须有详细步骤，保存到 `plan.md`
+2. 计划完成 → 用户确认 → 切换 Atlas，发送 `/start-work` 执行
+
+### 直接构建模式（单功能 / 简单任务）
+
+1. 任务交给 Sisyphus
+2. 让它尽可能提出全部问题，由 openclaw 向用户确认
+3. 确认后给出方案，向用户确认
+4. 确认后让 Sisyphus 开始工作
+
+---
+
+## 6. 模型选择
+
+可以通过 `opencode models` 查询完整列表。常用模型：
+
+1. **免费模型**
+   - `opencode/big-pickle`
+   - `opencode/deepseek-v4-flash-free`
+   - `opencode/mimo-v2.5-free`
+
+2. **opencode-go 订阅模型**
+   - `opencode-go/deepseek-v4-flash`
+   - `opencode-go/deepseek-v4-pro`
+   - `opencode-go/glm-5.1`
+   - `opencode-go/kimi-k2.6`
+
+3. **DeepSeek 官方 API**
+   - `deepseek/deepseek-v4-flash`
+   - `deepseek/deepseek-v4-pro`
+
+---
+
+## 7. 常见陷阱（排查指引）
+
+| 症状 | 可能原因 | 怎么做 |
+|------|---------|-------|
+| `session list` 查不到新 session | `--dir` 漏了或指向了错误路径 | 从上级目录查，检查 `--dir` 参数 |
+| CLI 退出（SIGKILL/SIGTERM） | process timeout 或 pkill | session 仍在跑，走验证流程（第 3 节） |
+| 文件没写入预期路径 | session 归属了错误项目 root | 从 `~` 或上级目录查 session list 确认归属 |
+| Agent 一直在探索找文件 | `--dir` 不对，在错误 root 下找文件 | 停掉当前 session，修正 `--dir` 重发 |
+| 重复出现多个同名 session | 多次重发造成的 | 清理多余的，只保留最新的那个 |
+| `nc -X` SSH 代理连接不上 | `nc` 的 SOCKS 代理与 SSH 不兼容 | 改用 HTTP 代理或 `socat` 做 ProxyCommand |
