@@ -53,6 +53,16 @@ cd <项目根目录> && opencode run --attach http://localhost:4096 \
 > Session 由 daemon（`opencode serve`）独立管理，CLI 只是观察者。
 > CLI 退出了（无论什么信号），session 仍在后台继续运行。
 
+### 前置判断：要不要验？
+
+| 执行方式 | 能直接看结果？ | 需要验证流程？ |
+|---------|:------------:|:-------------:|
+| 前台执行（等待 CLI 输出返回） | ✅ 直接在 stdout 看结果 | ❌ 不需要 |
+| exec timeout / SIGKILL / 中断 | ❌ 没拿到完整结果 | ✅ 需要走验证流程 |
+| background 启动后隔段时间来查 | ❌ 进程早结束了 | ✅ 需要走验证流程 |
+
+**简单来说：如果这次执行成功看到了完整返回（含完成确认），就跳过验证。其他情况全都要走验证流程。**
+
 ### 标准验证流程
 
 #### 步骤 1：获取 session ID
@@ -81,10 +91,6 @@ python3 scripts/poll_session.py <session_id>
 | 输出了 Error / Failed | ❌ 任务执行出错 |
 | 脚本报 404 | ❌ session ID 不存在 |
 | 脚本报连接错误 | ❌ opencode serve 可能挂了 |
-
-### 特殊情况：前台命令超时/中断
-
-如果前台 `opencode run` 被超时或中断，**不用重发**，走标准验证流程（步骤 1→2→3）即可。
 
 ---
 
