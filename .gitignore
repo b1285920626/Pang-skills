@@ -1,0 +1,14 @@
+# Obsidian
+.obsidian/
+
+# OMO runtime data
+.omo/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
